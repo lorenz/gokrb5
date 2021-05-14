@@ -13,7 +13,7 @@ func ChangePasswdMsg(cname types.PrincipalName, realm, password string, tkt mess
 	// Create change password data struct and marshal to bytes
 	chgpasswd := ChangePasswdData{
 		NewPasswd: []byte(password),
-		TargName:  cname,
+		//TargName:  cname,
 		TargRealm: realm,
 	}
 	chpwdb, err := chgpasswd.Marshal()
