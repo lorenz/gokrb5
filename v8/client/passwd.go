@@ -5,6 +5,7 @@ import (
 
 	"github.com/jcmturner/gokrb5/v8/kadmin"
 	"github.com/jcmturner/gokrb5/v8/messages"
+	"github.com/jcmturner/gokrb5/v8/types"
 )
 
 // Kpasswd server response codes.
@@ -30,7 +31,7 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 		return false, err
 	}
 
-	msg, key, err := kadmin.ChangePasswdMsg(cl.Credentials.CName(), cl.Credentials.Domain(), newPasswd, ASRep.Ticket, ASRep.DecryptedEncPart.Key)
+	msg, key, err := kadmin.ChangePasswdMsg(cl.Credentials.CName(), types.PrincipalName{}, cl.Credentials.Domain(), newPasswd, ASRep.Ticket, ASRep.DecryptedEncPart.Key)
 	if err != nil {
 		return false, err
 	}
@@ -46,6 +47,36 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 		return false, fmt.Errorf("error response from kadmin: code: %d; result: %s; krberror: %v", r.ResultCode, r.Result, r.KRBError)
 	}
 	cl.Credentials.WithPassword(newPasswd)
+	return true, nil
+}
+
+// SetPasswd sets the password of the given principal. Note this is not allowed by kpasswd servers by default
+// and needs special authorization policies.
+func (cl *Client) SetPasswd(cname types.PrincipalName, newPasswd string) (bool, error) {
+	ASReq, err := messages.NewASReqForChgPasswd(cl.Credentials.Domain(), cl.Config, cl.Credentials.CName())
+	if err != nil {
+		return false, err
+	}
+	ASRep, err := cl.ASExchange(cl.Credentials.Domain(), ASReq, 0)
+	if err != nil {
+		return false, err
+	}
+
+	msg, key, err := kadmin.ChangePasswdMsg(cl.Credentials.CName(), cname, cl.Credentials.Domain(), newPasswd, ASRep.Ticket, ASRep.DecryptedEncPart.Key)
+	if err != nil {
+		return false, err
+	}
+	r, err := cl.sendToKPasswd(msg)
+	if err != nil {
+		return false, err
+	}
+	err = r.Decrypt(key)
+	if err != nil {
+		return false, err
+	}
+	if r.ResultCode != KRB5_KPASSWD_SUCCESS {
+		return false, fmt.Errorf("error response from kadmin: code: %d; result: %s; krberror: %v", r.ResultCode, r.Result, r.KRBError)
+	}
 	return true, nil
 }
 
