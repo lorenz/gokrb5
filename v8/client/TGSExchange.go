@@ -1,6 +1,8 @@
 package client
 
 import (
+	"fmt"
+
 	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/iana/nametype"
 	"github.com/jcmturner/gokrb5/v8/krberror"
@@ -60,6 +62,7 @@ func (cl *Client) TGSExchange(tgsReq messages.TGSReq, kdcRealm string, tgt messa
 				return tgsReq, tgsRep, err
 			}
 		}
+		// TODO: S4U2self/proxy
 		tgsReq, err = messages.NewTGSReq(cl.Credentials.CName(), realm, cl.Config, tgsRep.Ticket, tgsRep.DecryptedEncPart.Key, tgsReq.ReqBody.SName, tgsReq.Renewal)
 		if err != nil {
 			return tgsReq, tgsRep, err
@@ -105,4 +108,50 @@ func (cl *Client) GetServiceTicket(spn string) (messages.Ticket, types.Encryptio
 		return tkt, skey, err
 	}
 	return tgsRep.Ticket, tgsRep.DecryptedEncPart.Key, nil
+}
+
+// GetServiceTicketForUser uses constrained delegation to issue a ticket for a specific user and service.
+func (cl *Client) GetServiceTicketForUser(spn string, userRealm string, user types.PrincipalName) (messages.Ticket, types.EncryptionKey, error) {
+	var tkt messages.Ticket
+	var skey types.EncryptionKey
+
+	// S4U2Self request to get user ticket to own service.
+	// This runs against the service realm, realm crossings are only done by
+	// referrals.
+	tgt, sessionKey, err := cl.sessionTGT(cl.Credentials.Realm())
+	if err != nil {
+		return tkt, skey, fmt.Errorf("while getting TGT: %w", err)
+	}
+	userTGSReq, err := messages.NewS4U2SelfTGSReq(cl.Credentials.CName(), cl.Credentials.Realm(), cl.Config, tgt, sessionKey, false, user, userRealm)
+	if err != nil {
+		return tkt, skey, fmt.Errorf("assembling S4U2self request failed: %w", err)
+	}
+	_, userTGSRep, err := cl.TGSExchange(userTGSReq, cl.Credentials.Realm(), tgt, sessionKey, 0)
+	if err != nil {
+		return tkt, skey, fmt.Errorf("while getting S4U2Self ticket for user: %w", err)
+	}
+
+	if err := userTGSRep.Ticket.DecryptEncPart(cl.Credentials.Keytab(), nil); err != nil {
+		return tkt, skey, fmt.Errorf("cannot decrypt S4U2Self ticket received: %w", err)
+	}
+	userTGSRep.Ticket.DecryptedEncPart = messages.EncTicketPart{}
+
+	princ := types.NewPrincipalName(nametype.KRB_NT_PRINCIPAL, spn)
+	realm := cl.spnRealm(princ)
+
+	// if we don't know the SPN's realm, ask the client realm's KDC
+	if realm == "" {
+		realm = cl.Credentials.Realm()
+	}
+
+	svcTGSReq, err := messages.NewS4U2ProxyTGSReq(cl.Credentials.CName(), realm, cl.Config, tgt, sessionKey, princ, false, userTGSRep.Ticket, user)
+	if err != nil {
+		return tkt, skey, fmt.Errorf("assembling S4U2proxy request failed: %w", err)
+	}
+
+	_, svcTGSRep, err := cl.TGSExchange(svcTGSReq, realm, tgt, sessionKey, 0)
+	if err != nil {
+		return tkt, skey, fmt.Errorf("while getting S4U2proxy ticket for user: %w", err)
+	}
+	return svcTGSRep.Ticket, svcTGSRep.DecryptedEncPart.Key, nil
 }

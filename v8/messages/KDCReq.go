@@ -34,11 +34,12 @@ type marshalKDCReq struct {
 
 // KDCReqFields represents the KRB_KDC_REQ fields.
 type KDCReqFields struct {
-	PVNO    int
-	MsgType int
-	PAData  types.PADataSequence
-	ReqBody KDCReqBody
-	Renewal bool
+	PVNO          int
+	MsgType       int
+	PAData        types.PADataSequence
+	ReqBody       KDCReqBody
+	Renewal       bool
+	ExpectedCName types.PrincipalName
 }
 
 // ASReq implements RFC 4120 KRB_AS_REQ: https://tools.ietf.org/html/rfc4120#section-5.4.1.
@@ -175,6 +176,79 @@ func NewUser2UserTGSReq(cname types.PrincipalName, kdcRealm string, c *config.Co
 	return a, err
 }
 
+// NewS4U2SelfTGSReq returns a TGS-REQ for getting TGS.
+func NewS4U2SelfTGSReq(cname types.PrincipalName, kdcRealm string, c *config.Config, tgt Ticket, sessionKey types.EncryptionKey, renewal bool, forUser types.PrincipalName, userRealm string) (TGSReq, error) {
+	a, err := tgsReq(cname, cname, kdcRealm, renewal, c)
+	if err != nil {
+		return a, err
+	}
+	types.SetFlag(&a.ReqBody.KDCOptions, flags.Forwardable)
+	types.SetFlag(&a.ReqBody.KDCOptions, flags.Canonicalize)
+	types.SetFlag(&a.ReqBody.KDCOptions, flags.Proxiable)
+	err = a.setPAData(tgt, sessionKey)
+	if err != nil {
+		return a, err
+	}
+	paUser := types.PAForUser{
+		UserName:  forUser,
+		UserRealm: kdcRealm,
+	}
+	paUser.CalculateChecksum(sessionKey.KeyValue)
+	paUserData, err := asn1.Marshal(paUser)
+	if err != nil {
+		return a, err
+	}
+	a.PAData = append(a.PAData, types.PAData{
+		PADataType:  patype.PA_FOR_USER,
+		PADataValue: paUserData,
+	})
+	opts := types.PAPACOptions{
+		Flags: types.NewKrbFlags(),
+	}
+	types.SetFlag(&opts.Flags, types.PAPACOptionsClaims)
+	types.SetFlag(&opts.Flags, types.PAPACOptionsConstrainedDelegation)
+	optsRaw, err := asn1.Marshal(opts)
+	if err != nil {
+		panic(err)
+	}
+	a.PAData = append(a.PAData, types.PAData{
+		PADataType:  patype.PA_PAC_OPTIONS,
+		PADataValue: optsRaw,
+	})
+	a.ExpectedCName = forUser
+	return a, err
+}
+
+func NewS4U2ProxyTGSReq(cname types.PrincipalName, kdcRealm string, c *config.Config, tgt Ticket, sessionKey types.EncryptionKey, sname types.PrincipalName, renewal bool, userTicket Ticket, forUser types.PrincipalName) (TGSReq, error) {
+	a, err := tgsReq(cname, sname, kdcRealm, renewal, c)
+	if err != nil {
+		return a, err
+	}
+	types.SetFlag(&a.ReqBody.KDCOptions, flags.CNameInAddlTkt)
+	types.SetFlag(&a.ReqBody.KDCOptions, flags.Canonicalize)
+	types.SetFlag(&a.ReqBody.KDCOptions, flags.Forwardable)
+	a.ReqBody.AdditionalTickets = append(a.ReqBody.AdditionalTickets, userTicket)
+	err = a.setPAData(tgt, sessionKey)
+	if err != nil {
+		return a, err
+	}
+	opts := types.PAPACOptions{
+		Flags: types.NewKrbFlags(),
+	}
+	types.SetFlag(&opts.Flags, types.PAPACOptionsConstrainedDelegation)
+	types.SetFlag(&opts.Flags, types.PAPACOptionsClaims)
+	optsRaw, err := asn1.Marshal(opts)
+	if err != nil {
+		panic(err)
+	}
+	a.PAData = append(a.PAData, types.PAData{
+		PADataType:  patype.PA_PAC_OPTIONS,
+		PADataValue: optsRaw,
+	})
+	a.ExpectedCName = forUser
+	return a, err
+}
+
 // tgsReq populates the fields for a TGS_REQ
 func tgsReq(cname, sname types.PrincipalName, kdcRealm string, renewal bool, c *config.Config) (TGSReq, error) {
 	nonce, err := rand.Int(rand.Reader, big.NewInt(math.MaxInt32))
@@ -228,7 +302,7 @@ func tgsReq(cname, sname types.PrincipalName, kdcRealm string, renewal bool, c *
 
 func (k *TGSReq) setPAData(tgt Ticket, sessionKey types.EncryptionKey) error {
 	// Marshal the request and calculate checksum
-	b, err := k.ReqBody.Marshal()
+	b, err := k.ReqBody.MarshalTGS()
 	if err != nil {
 		return krberror.Errorf(err, krberror.EncodingError, "error marshaling TGS_REQ body")
 	}
@@ -354,7 +428,7 @@ func (k *ASReq) Marshal() ([]byte, error) {
 		MsgType: k.MsgType,
 		PAData:  k.PAData,
 	}
-	b, err := k.ReqBody.Marshal()
+	b, err := k.ReqBody.MarshalAS()
 	if err != nil {
 		var mk []byte
 		return mk, err
@@ -380,7 +454,7 @@ func (k *TGSReq) Marshal() ([]byte, error) {
 		MsgType: k.MsgType,
 		PAData:  k.PAData,
 	}
-	b, err := k.ReqBody.Marshal()
+	b, err := k.ReqBody.MarshalTGS()
 	if err != nil {
 		var mk []byte
 		return mk, err
@@ -400,11 +474,18 @@ func (k *TGSReq) Marshal() ([]byte, error) {
 }
 
 // Marshal KRB_KDC_REQ body struct.
-func (k *KDCReqBody) Marshal() ([]byte, error) {
+func (k *KDCReqBody) MarshalAS() ([]byte, error) {
+	return k.marshal(true)
+}
+
+func (k *KDCReqBody) MarshalTGS() ([]byte, error) {
+	return k.marshal(false)
+}
+
+func (k *KDCReqBody) marshal(isAS bool) ([]byte, error) {
 	var b []byte
 	m := marshalKDCReqBody{
 		KDCOptions:  k.KDCOptions,
-		CName:       k.CName,
 		Realm:       k.Realm,
 		SName:       k.SName,
 		From:        k.From,
@@ -414,6 +495,9 @@ func (k *KDCReqBody) Marshal() ([]byte, error) {
 		EType:       k.EType,
 		Addresses:   k.Addresses,
 		EncAuthData: k.EncAuthData,
+	}
+	if isAS {
+		m.CName = k.CName
 	}
 	rawtkts, err := MarshalTicketSequence(k.AdditionalTickets)
 	if err != nil {

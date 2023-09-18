@@ -318,7 +318,7 @@ func (k *TGSRep) DecryptEncPart(key types.EncryptionKey) error {
 
 // Verify checks the validity of the TGS_REP message.
 func (k *TGSRep) Verify(cfg *config.Config, tgsReq TGSReq) (bool, error) {
-	if !k.CName.Equal(tgsReq.ReqBody.CName) {
+	if !k.CName.Equal(tgsReq.ReqBody.CName) && (tgsReq.ExpectedCName.NameType == 0 || !k.CName.Equal(tgsReq.ExpectedCName)) {
 		return false, krberror.NewErrorf(krberror.KRBMsgError, "CName in response does not match what was requested. Requested: %+v; Reply: %+v", tgsReq.ReqBody.CName, k.CName)
 	}
 	if k.Ticket.Realm != tgsReq.ReqBody.Realm {

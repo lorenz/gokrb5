@@ -3,10 +3,14 @@ package types
 // Reference: https://www.ietf.org/rfc/rfc4120.txt
 // Section: 5.2.7
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
+	"github.com/jcmturner/gokrb5/v8/crypto/rfc4757"
+	"github.com/jcmturner/gokrb5/v8/iana/chksumtype"
 	"github.com/jcmturner/gokrb5/v8/iana/patype"
 )
 
@@ -80,6 +84,32 @@ type PAReqEncPARep struct {
 	Chksum     []byte `asn1:"explicit,tag:1"`
 }
 
+// PAForUser implements the MS-SFU PA-FOR-USER type.
+// It is used to perform S4U2self constrained delegation requests.
+type PAForUser struct {
+	// UserName contains the user on whose behalf the ticket should be issued.
+	UserName PrincipalName `asn1:"explicit,tag:0"`
+	// UserRealm contains the realm to which the user belongs.
+	UserRealm string `asn1:"generalstring,explicit,tag:1"`
+	// Chksum contains a Message Authentication Code (MAC), authenticating
+	// the contents of the message with the TGT session key.
+	Chksum Checksum `asn1:"explicit,tag:2"`
+	// AuthPackage contains the name of the authentication mechanism used to
+	// authenticate the user. This must be set to the literal string
+	// "Kerberos", but verification should be done case-insensitively for
+	// compatibility.
+	AuthPackage string `asn1:"generalstring,explicit,tag:3"`
+}
+
+const (
+	PAPACOptionsConstrainedDelegation = 3
+	PAPACOptionsClaims                = 0
+)
+
+type PAPACOptions struct {
+	Flags asn1.BitString `asn1:"explicit,tag:0"`
+}
+
 // Unmarshal bytes into the PAData
 func (pa *PAData) Unmarshal(b []byte) error {
 	_, err := asn1.Unmarshal(b, pa)
@@ -132,6 +162,29 @@ func (a *ETypeInfo2) Unmarshal(b []byte) error {
 func (a *ETypeInfo2Entry) Unmarshal(b []byte) error {
 	_, err := asn1.Unmarshal(b, a)
 	return err
+}
+
+// Unmarshal bytes into a PAForUser
+func (a *PAForUser) Unmarshal(b []byte) error {
+	_, err := asn1.Unmarshal(b, a)
+	return err
+}
+
+func (a *PAForUser) CalculateChecksum(sessionKey []byte) {
+	a.AuthPackage = "Kerberos"
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, a.UserName.NameType)
+	for _, p := range a.UserName.NameString {
+		buf.WriteString(p)
+	}
+	buf.WriteString(a.UserRealm)
+	buf.WriteString(a.AuthPackage)
+	// Ignore error, it can't happen
+	mac, _ := rfc4757.Checksum(sessionKey, 17, buf.Bytes())
+	a.Chksum = Checksum{
+		CksumType: chksumtype.KERB_CHECKSUM_HMAC_MD5,
+		Checksum:  mac,
+	}
 }
 
 // GetETypeInfo returns an ETypeInfo from the PAData.

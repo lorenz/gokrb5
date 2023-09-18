@@ -382,7 +382,7 @@ func TestMarshalKDCReqBody(t *testing.T) {
 		t.Fatalf("Unmarshal error: %v", err)
 	}
 	// Marshal and re-unmarshal the result nd then compare
-	mb, err := a.Marshal()
+	mb, err := a.MarshalAS()
 	if err != nil {
 		t.Fatalf("Unmarshal error: %v", err)
 	}
