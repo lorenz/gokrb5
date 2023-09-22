@@ -163,8 +163,15 @@ func (wt *WrapToken) Unmarshal(b []byte, expectFromAcceptor bool) error {
 	wt.EC = checksumL
 	wt.RRC = binary.BigEndian.Uint16(b[6:8])
 	wt.SndSeqNum = binary.BigEndian.Uint64(b[8:16])
-	wt.Payload = b[16 : len(b)-int(checksumL)]
-	wt.CheckSum = b[len(b)-int(checksumL):]
+
+	trailer := b[16:]
+	actualRRC := int(wt.RRC) % len(trailer)
+	if actualRRC != 0 {
+		trailer = append(trailer[actualRRC:], trailer[:actualRRC]...)
+	}
+
+	wt.Payload = trailer[:len(trailer)-int(checksumL)]
+	wt.CheckSum = trailer[len(trailer)-int(checksumL):]
 	return nil
 }
 
