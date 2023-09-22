@@ -238,11 +238,15 @@ func (cl *Client) refreshSession(s *session) (bool, error) {
 	s.mux.RLock()
 	realm := s.realm
 	renewTill := s.renewTill
+	endTime := s.endTime
 	s.mux.RUnlock()
 	cl.Log("refreshing TGT session for %s", realm)
-	if time.Now().UTC().Before(renewTill) {
+	if time.Now().Before(endTime) && time.Now().Before(renewTill) {
 		err := cl.renewTGT(s)
-		return true, err
+		if err == nil {
+			return true, nil
+		} // otherwise fall through to reauth
+		cl.Log("TGT refresh unsuccessful, performing reauth: %v", err)
 	}
 	err := cl.realmLogin(realm)
 	return false, err
